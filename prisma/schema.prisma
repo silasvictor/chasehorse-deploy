@@ -1,0 +1,679 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMINISTRATOR
+  OPERATIONS_MANAGER
+  FIELD_INSPECTOR
+  AUDITOR
+  READ_ONLY_VIEWER
+}
+
+enum AssignmentStatus {
+  DRAFT
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  OVERDUE
+}
+
+enum ShipmentStatus {
+  PREPARING
+  IN_TRANSIT
+  DELIVERED
+  DELAYED
+}
+
+enum InspectionType {
+  WAREHOUSE
+  LOADING_UNLOADING
+  QUALITY
+  STOCK_TAKING
+  POD_VERIFICATION
+  GST_AUDIT
+}
+
+enum InspectionStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum DiscrepancyStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+enum DocumentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FLAGGED
+  REJECTED
+}
+
+enum ReportType {
+  WAREHOUSE_INSPECTION_SUMMARY
+  INVENTORY_DISCREPANCY
+  POD_COMPLIANCE
+  QUALITY_INSPECTION
+  OUTSTANDING_TASKS
+}
+
+enum ReportStatus {
+  DRAFT
+  GENERATED
+  PUBLISHED
+}
+
+enum NotificationType {
+  INFO
+  WARNING
+  ERROR
+  SUCCESS
+  ALERT
+}
+
+enum AiMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model User {
+  id            String    @id @default(cuid()) @db.Uuid
+  email         String    @unique
+  name          String?
+  passwordHash  String?
+  image         String?
+  role          Role      @default(READ_ONLY_VIEWER)
+  isActive      Boolean   @default(true)
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions      Session[]
+  accounts      Account[]
+  assignments   Assignment[]       @relation("AssignmentAssignee")
+  createdAssignments Assignment[] @relation("AssignmentCreator")
+  inspections   Inspection[]
+  discrepancies   StockDiscrepancy[] @relation("Reporter")
+  resolvedDiscrepancies StockDiscrepancy[] @relation("Resolver")
+  podDocuments    PODDocument[]    @relation("Verifier")
+  qualityRecords  QualityInspectionRecord[]
+  reports         Report[]
+  notifications   Notification[]
+  aiConversations AiConversation[]
+  documents       Document[]
+  auditLogs       AuditLog[]
+  systemSettings  SystemSetting[]  @relation("SettingsUpdater")
+  tasks           Task[]
+  organizationMemberships OrganizationMember[]
+  ownedCapaRecords        CapaRecord[]
+  assignedCapaActions     CapaAction[]
+  createdShipments        Shipment[] @relation("ShipmentCreator")
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid()) @db.Uuid
+  userId            String  @db.Uuid
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid()) @db.Uuid
+  sessionToken String   @unique
+  userId       String   @db.Uuid
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Assignment {
+  id              String              @id @default(cuid()) @db.Uuid
+  title           String
+  description     String?             @db.Text
+  status          AssignmentStatus    @default(DRAFT)
+  priority        String              @default("medium") // low | medium | high | critical
+  location        String?
+  dueDate         DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  assigneeId      String?             @db.Uuid
+  creatorId       String?             @db.Uuid
+
+  assignee        User?               @relation("AssignmentAssignee", fields: [assigneeId], references: [id])
+  creator         User?               @relation("AssignmentCreator", fields: [creatorId], references: [id])
+
+  inspections     Inspection[]
+  checklists      LoadingUnloadingChecklist[]
+  podDocuments    PODDocument[]
+  tasks           Task[]
+  invoices        Invoice[]
+  shipments       Shipment[]
+
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@map("assignments")
+}
+
+model Warehouse {
+  id          String   @id @default(cuid()) @db.Uuid
+  name        String
+  code        String?  @unique
+  address     String?
+  city        String?
+  country     String?
+  contactName String?
+  contactPhone String?
+  capacity    String?
+  isActive    Boolean  @default(true)
+
+  inspections Inspection[]
+  inventory   InventoryItem[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("warehouses")
+}
+
+model InventoryItem {
+  id            String   @id @default(cuid()) @db.Uuid
+  warehouseId   String   @db.Uuid
+  sku           String
+  name          String
+  quantity      Int      @default(0)
+  unit          String   @default("pcs")
+  minThreshold  Int      @default(0)
+  location      String?
+  lastCountedAt DateTime?
+
+  warehouse     Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  discrepancies StockDiscrepancy[]
+  shipments     Shipment[]
+
+  @@unique([warehouseId, sku])
+  @@map("inventory_items")
+}
+
+model Shipment {
+  id                 String         @id @default(uuid()) @db.Uuid
+  assignmentId       String         @db.Uuid
+  inventoryItemId    String         @db.Uuid
+  createdById        String         @db.Uuid
+  quantity           Int            @default(1)
+  destination        String
+  status             ShipmentStatus @default(PREPARING)
+  currentLatitude    Float?
+  currentLongitude   Float?
+  locationAccuracy   Float?
+  lastLocationAt     DateTime?
+  deliveredAt        DateTime?
+  assignment         Assignment     @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  inventoryItem      InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  createdBy          User           @relation("ShipmentCreator", fields: [createdById], references: [id])
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([assignmentId])
+  @@index([inventoryItemId])
+  @@index([status])
+  @@map("shipments")
+}
+
+model StockDiscrepancy {
+  id            String           @id @default(cuid()) @db.Uuid
+  inventoryItemId String        @db.Uuid
+  recordedQty   Int
+  countedQty    Int
+  difference    Int
+  status        DiscrepancyStatus @default(OPEN)
+  notes         String?          @db.Text
+  reportedById  String?          @db.Uuid
+  resolvedById  String?          @db.Uuid
+  resolvedAt    DateTime?
+
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  reporter      User?           @relation("Reporter", fields: [reportedById], references: [id])
+  resolver      User?           @relation("Resolver", fields: [resolvedById], references: [id])
+
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@map("stock_discrepancies")
+}
+
+model Inspection {
+  id              String           @id @default(cuid()) @db.Uuid
+  title           String
+  type            InspectionType   @default(QUALITY)
+  status          InspectionStatus @default(SCHEDULED)
+  warehouseId     String?          @db.Uuid
+  assignmentId    String?          @db.Uuid
+  inspectorId     String?          @db.Uuid
+  scheduledAt     DateTime?
+  completedAt     DateTime?
+  findings        String?          @db.Text
+  report          String?          @db.Text
+
+  warehouse       Warehouse?       @relation(fields: [warehouseId], references: [id])
+  assignment      Assignment?      @relation(fields: [assignmentId], references: [id])
+  inspector       User?            @relation(fields: [inspectorId], references: [id])
+  qualityRecords  QualityInspectionRecord[]
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@map("inspections")
+}
+
+model QualityInspectionRecord {
+  id          String   @id @default(cuid()) @db.Uuid
+  inspectionId String  @db.Uuid
+  item        String
+  result      String   // pass | fail | warning
+  notes       String?  @db.Text
+  severity    String   @default("low") // low | medium | high | critical
+  inspectorId String?  @db.Uuid
+
+  inspection  Inspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  inspector   User?      @relation(fields: [inspectorId], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("quality_inspection_records")
+}
+
+model LoadingUnloadingChecklist {
+  id          String   @id @default(cuid()) @db.Uuid
+  assignmentId String  @db.Uuid
+  checklistType String // loading | unloading
+  status      String   @default("pending") // pending | in_progress | completed
+  items       String?  @db.Text // JSON array of checklist items
+  completedAt DateTime?
+
+  assignment  Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("loading_unloading_checklists")
+}
+
+model PODDocument {
+  id          String   @id @default(cuid()) @db.Uuid
+  assignmentId String  @db.Uuid
+  fileName    String
+  fileUrl     String
+  mimeType    String
+  size        Int
+  status      DocumentStatus @default(PENDING)
+  extractedData String?  @db.Text // JSON
+  verified    Boolean  @default(false)
+  verifiedById String?   @db.Uuid
+  verifiedAt  DateTime?
+
+  assignment  Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  verifier    User?      @relation("Verifier", fields: [verifiedById], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("pod_documents")
+}
+
+model Task {
+  id          String   @id @default(cuid()) @db.Uuid
+  title       String
+  description String?  @db.Text
+  status      String   @default("open") // open | in_progress | completed | overdue
+  priority    String   @default("medium")
+  assigneeId  String?  @db.Uuid
+  dueDate     DateTime?
+  completedAt DateTime?
+  assignmentId String? @db.Uuid
+
+  assignment  Assignment? @relation(fields: [assignmentId], references: [id])
+  assignee    User?      @relation(fields: [assigneeId], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("tasks")
+}
+
+model Report {
+  id          String   @id @default(cuid()) @db.Uuid
+  title       String
+  type        ReportType
+  status      ReportStatus @default(DRAFT)
+  content     String?  @db.Text
+  generatedById String  @db.Uuid
+  fileUrl     String?
+
+  generatedBy User     @relation(fields: [generatedById], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("reports")
+}
+
+model Notification {
+  id        String             @id @default(cuid()) @db.Uuid
+  userId    String             @db.Uuid
+  type      NotificationType   @default(INFO)
+  title     String
+  content   String             @db.Text
+  read      Boolean            @default(false)
+  readAt    DateTime?
+
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime           @default(now())
+
+  @@map("notifications")
+}
+
+model AiConversation {
+  id        String   @id @default(cuid()) @db.Uuid
+  userId    String   @db.Uuid
+  title     String   @default("New conversation")
+  archived  Boolean  @default(false)
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  AiMessage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id          String          @id @default(cuid()) @db.Uuid
+  conversationId String      @db.Uuid
+  role        AiMessageRole
+  content     String          @db.Text
+  provider    String?
+  model       String?
+  tokens      Int?
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime        @default(now())
+
+  @@map("ai_messages")
+}
+
+model Document {
+  id          String   @id @default(cuid()) @db.Uuid
+  originalName String
+  storedName  String
+  fileUrl     String
+  mimeType    String
+  size        Int
+  status      DocumentStatus @default(PENDING)
+  extractedData String?  @db.Text
+  uploadedById String  @db.Uuid
+
+  uploadedBy  User     @relation(fields: [uploadedById], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("documents")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid()) @db.Uuid
+  userId    String?  @db.Uuid
+  action    String
+  entityType String?
+  entityId  String?
+  metadata  String?  @db.Text
+  ipAddress String?
+  userAgent String?
+
+  user      User?    @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+model SystemSetting {
+  id          String   @id @default(cuid()) @db.Uuid
+  key         String   @unique
+  value       String   @db.Text
+  updatedById String?  @db.Uuid
+
+  updatedBy   User?    @relation("SettingsUpdater", fields: [updatedById], references: [id])
+
+  updatedAt   DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+model Organization {
+  id          String   @id @default(cuid()) @db.Uuid
+  name        String
+  slug        String   @unique
+  domain      String?
+  plan        String   @default("ENTERPRISE")
+  logoUrl     String?
+  settings    String?  @db.Text
+  isActive    Boolean  @default(true)
+
+  members     OrganizationMember[]
+  invoices    Invoice[]
+  vendors     Vendor[]
+  capaRecords CapaRecord[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id             String       @id @default(cuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  userId         String       @db.Uuid
+  role           String       @default("MEMBER") // OWNER | ADMIN | MEMBER | VIEWER
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime     @default(now())
+
+  @@unique([organizationId, userId])
+  @@map("organization_members")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model Invoice {
+  id             String        @id @default(cuid()) @db.Uuid
+  invoiceNumber  String        @unique
+  organizationId String        @db.Uuid
+  clientName     String
+  clientEmail    String?
+  assignmentId   String?       @db.Uuid
+  subtotal       Float         @default(0)
+  tax            Float         @default(0)
+  total          Float         @default(0)
+  currency       String        @default("USD")
+  status         InvoiceStatus @default(DRAFT)
+  dueDate        DateTime?
+  issuedDate     DateTime?
+  paidAt         DateTime?
+  paymentMethod  String?
+  notes          String?       @db.Text
+
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignment     Assignment?   @relation(fields: [assignmentId], references: [id])
+  lineItems      InvoiceLineItem[]
+
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(cuid()) @db.Uuid
+  invoiceId   String   @db.Uuid
+  description String
+  quantity    Float    @default(1)
+  unitPrice   Float    @default(0)
+  amount      Float    @default(0)
+
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+
+  @@map("invoice_line_items")
+}
+
+model Vendor {
+  id               String   @id @default(cuid()) @db.Uuid
+  organizationId   String   @db.Uuid
+  name             String
+  code             String?
+  contactName      String?
+  email            String?
+  phone            String?
+  address          String?  @db.Text
+  category         String   @default("General")
+  rating           Float    @default(5.0)
+  complianceStatus String   @default("COMPLIANT") // COMPLIANT | PENDING_REVIEW | EXPIRED | NON_COMPLIANT
+  contractExpiry   DateTime?
+  notes            String?  @db.Text
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("vendors")
+}
+
+enum CapaStatus {
+  IDENTIFIED
+  ROOT_CAUSE_ANALYSIS
+  ACTION_PLAN
+  IN_PROGRESS
+  VERIFIED
+  CLOSED
+}
+
+enum CapaSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model CapaRecord {
+  id                 String       @id @default(cuid()) @db.Uuid
+  organizationId     String       @db.Uuid
+  capaNumber         String       @unique
+  title              String
+  source             String       // INSPECTION | AUDIT | CUSTOMER_COMPLAINT | DISCREPANCY
+  severity           CapaSeverity @default(MEDIUM)
+  status             CapaStatus   @default(IDENTIFIED)
+  ownerId            String?      @db.Uuid
+  rootCauseMethod    String?      // 5_WHYS | FISHBONE | FMEA
+  rootCauseAnalysis  String?      @db.Text
+  containmentAction  String?      @db.Text
+  targetDate         DateTime?
+  closedAt           DateTime?
+
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner              User?        @relation(fields: [ownerId], references: [id])
+  actions            CapaAction[]
+
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@map("capa_records")
+}
+
+model CapaAction {
+  id           String     @id @default(cuid()) @db.Uuid
+  capaRecordId String     @db.Uuid
+  description  String     @db.Text
+  type         String     // CORRECTIVE | PREVENTIVE
+  assigneeId   String?    @db.Uuid
+  dueDate      DateTime?
+  status       String     @default("PENDING") // PENDING | IN_PROGRESS | COMPLETED
+  notes        String?    @db.Text
+  completedAt  DateTime?
+
+  capaRecord   CapaRecord @relation(fields: [capaRecordId], references: [id], onDelete: Cascade)
+  assignee     User?      @relation(fields: [assigneeId], references: [id])
+
+  createdAt    DateTime   @default(now())
+
+  @@map("capa_actions")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid()) @db.Uuid
+  token     String   @unique
+  email     String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@map("password_reset_tokens")
+}
